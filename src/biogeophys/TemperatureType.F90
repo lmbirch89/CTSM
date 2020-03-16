@@ -55,6 +55,7 @@ module TemperatureType
      real(r8), pointer :: thv_col                  (:)   ! col virtual potential temperature (kelvin)
      real(r8), pointer :: thm_patch                (:)   ! patch intermediate variable (forc_t+0.0098*forc_hgt_t_patch)
      real(r8), pointer :: t_a10_patch              (:)   ! patch 10-day running mean of the 2 m temperature (K)
+     real(r8), pointer :: soila10_patch            (:)   ! patch 10-day running mean of the soil temperature (K): lbirch
      real(r8), pointer :: t_a10min_patch           (:)   ! patch 10-day running mean of min 2-m temperature
      real(r8), pointer :: t_a5min_patch            (:)   ! patch 5-day running mean of min 2-m temperature
 
@@ -95,10 +96,6 @@ module TemperatureType
 
      ! Heat content
      real(r8), pointer :: beta_col                 (:)   ! coefficient of convective velocity [-]
-     ! For the following dynbal baseline variable: positive values are subtracted to avoid
-     ! counting liquid water content of "virtual" states; negative values are added to
-     ! account for missing states in the model.
-     real(r8), pointer :: dynbal_baseline_heat_col (:)   ! baseline heat content subtracted from each column's total heat calculation [J/m^2]
      real(r8), pointer :: heat1_grc                (:)   ! grc initial gridcell total heat content
      real(r8), pointer :: heat2_grc                (:)   ! grc post land cover change total heat content
      real(r8), pointer :: liquid_water_temp1_grc   (:)   ! grc initial weighted average liquid water temperature (K)
@@ -228,6 +225,7 @@ contains
     allocate(this%thv_col                  (begc:endc))                      ; this%thv_col                  (:)   = nan
     allocate(this%thm_patch                (begp:endp))                      ; this%thm_patch                (:)   = nan
     allocate(this%t_a10_patch              (begp:endp))                      ; this%t_a10_patch              (:)   = nan
+    allocate(this%soila10_patch            (begp:endp))                      ; this%soila10_patch            (:)   = nan
     allocate(this%t_a10min_patch           (begp:endp))                      ; this%t_a10min_patch           (:)   = nan
     allocate(this%t_a5min_patch            (begp:endp))                      ; this%t_a5min_patch            (:)   = nan
 
@@ -261,7 +259,6 @@ contains
 
     ! Heat content
     allocate(this%beta_col                 (begc:endc))                      ; this%beta_col                 (:)   = nan
-    allocate(this%dynbal_baseline_heat_col (begc:endc))                      ; this%dynbal_baseline_heat_col (:)   = nan
     allocate(this%heat1_grc                (begg:endg))                      ; this%heat1_grc                (:)   = nan
     allocate(this%heat2_grc                (begg:endg))                      ; this%heat2_grc                (:)   = nan
     allocate(this%liquid_water_temp1_grc   (begg:endg))                      ; this%liquid_water_temp1_grc   (:)   = nan
@@ -415,7 +412,7 @@ contains
 
     this%t_soisno_col(begc:endc,:) = spval
     call hist_addfld2d (fname='TSOI',  units='K', type2d='levgrnd', &
-         avgflag='A', long_name='soil temperature (natural vegetated and crop landunits only)', &
+         avgflag='A', long_name='soil temperature (vegetated landunits only)', &
          ptr_col=this%t_soisno_col, l2g_scale_type='veg')
 
     call hist_addfld2d (fname='TSOI_ICE',  units='K', type2d='levgrnd', &
@@ -429,8 +426,7 @@ contains
 
     this%tsl_col(begc:endc) = spval
     call hist_addfld1d (fname='TSL',  units='K', &
-         avgflag='A', &
-         long_name='temperature of near-surface soil layer (natural vegetated and crop landunits only)', &
+         avgflag='A', long_name='temperature of near-surface soil layer (vegetated landunits only)', &
          ptr_col=this%tsl_col, l2g_scale_type='veg')
     this%t_sno_mul_mss_col(begc:endc) = spval
     call hist_addfld1d (fname='SNOTXMASS',  units='K kg/m2', &
@@ -452,7 +448,12 @@ contains
     this%t_a10_patch(begp:endp) = spval
     call hist_addfld1d (fname='T10', units='K',  &
          avgflag='A', long_name='10-day running mean of 2-m temperature', &
-         ptr_patch=this%t_a10_patch, default='inactive')
+         ptr_patch=this%t_a10_patch, default='active')
+    !lbirch:added var
+    this%soila10_patch(begp:endp) = spval
+    call hist_addfld1d (fname='SOIL10', units='K',  &
+         avgflag='A', long_name='10-day running mean of Soil temperature', &
+         ptr_patch=this%soila10_patch, default='active')
 
     if (use_cn .and.  use_crop )then
        this%t_a5min_patch(begp:endp) = spval
@@ -461,12 +462,12 @@ contains
             ptr_patch=this%t_a5min_patch, default='inactive')
     end if
 
-    if (use_cn .and. use_crop )then
-       this%t_a10min_patch(begp:endp) = spval
-       call hist_addfld1d (fname='A10TMIN', units='K',  &
+    !if (use_cn)then
+    this%t_a10min_patch(begp:endp) = spval
+    call hist_addfld1d (fname='TDM10', units='K',  &
             avgflag='A', long_name='10-day running mean of min 2-m temperature', &
             ptr_patch=this%t_a10min_patch, default='inactive')
-    end if
+    !end if
 
     this%t_building_lun(begl:endl) = spval
     if (      is_simple_buildtemp )then
@@ -509,8 +510,7 @@ contains
          avgflag='A', long_name='initial gridcell total heat content', &
          ptr_lnd=this%heat1_grc)
     call hist_addfld1d (fname='HEAT_CONTENT1_VEG',  units='J/m^2',  &
-         avgflag='A', &
-         long_name='initial gridcell total heat content - natural vegetated and crop landunits only', &
+         avgflag='A', long_name='initial gridcell total heat content - vegetated landunits only', &
          ptr_lnd=this%heat1_grc, l2g_scale_type='veg', default='inactive')
 
     this%heat2_grc(begg:endg) = spval
@@ -658,10 +658,10 @@ contains
     integer  :: lev
     !-----------------------------------------------------------------------
 
-    SHR_ASSERT_ALL_FL((ubound(em_roof_lun)    == (/bounds%endl/)), sourcefile, __LINE__)
-    SHR_ASSERT_ALL_FL((ubound(em_wall_lun)    == (/bounds%endl/)), sourcefile, __LINE__)
-    SHR_ASSERT_ALL_FL((ubound(em_improad_lun) == (/bounds%endl/)), sourcefile, __LINE__)
-    SHR_ASSERT_ALL_FL((ubound(em_perroad_lun) == (/bounds%endl/)), sourcefile, __LINE__)
+    SHR_ASSERT_ALL((ubound(em_roof_lun)    == (/bounds%endl/)), errMsg(sourcefile, __LINE__))
+    SHR_ASSERT_ALL((ubound(em_wall_lun)    == (/bounds%endl/)), errMsg(sourcefile, __LINE__))
+    SHR_ASSERT_ALL((ubound(em_improad_lun) == (/bounds%endl/)), errMsg(sourcefile, __LINE__))
+    SHR_ASSERT_ALL((ubound(em_perroad_lun) == (/bounds%endl/)), errMsg(sourcefile, __LINE__))
 
     associate(snl => col%snl) ! Output: [integer (:)    ]  number of snow layers
 
@@ -847,11 +847,6 @@ contains
        if (col%itype(c) == icol_road_perv  ) this%emg_col(c) = em_perroad_lun(l)
     end do
 
-    ! Initialize dynbal_baseline_heat_col: for some columns, this is set elsewhere in
-    ! initialization, but we need it to be 0 for columns for which it is not explicitly
-    ! set.
-    this%dynbal_baseline_heat_col(bounds%begc:bounds%endc) = 0._r8
-
   end subroutine InitCold
 
   !------------------------------------------------------------------------
@@ -994,12 +989,6 @@ contains
          long_name='urban canopy air temperature', units='K',                                                         &
          interpinic_flag='interp', readvar=readvar, data=this%taf_lun)
 
-    call restartvar(ncid=ncid, flag=flag, varname='DYNBAL_BASELINE_HEAT', xtype=ncd_double, &
-         dim1name='column', &
-         long_name="baseline heat content subtracted from each column's total heat calculation", &
-         units='J/m2', &
-         interpinic_flag='interp', readvar=readvar, data=this%dynbal_baseline_heat_col)
-
     if (use_crop) then
        call restartvar(ncid=ncid, flag=flag,  varname='gdd1020', xtype=ncd_double,  &
             dim1name='pft', long_name='20 year average of growing degree-days base 10C from planting', units='ddays', &
@@ -1123,7 +1112,7 @@ contains
     !
     ! !USES
     use accumulMod       , only : init_accum_field
-    use clm_time_manager , only : get_step_size_real
+    use clm_time_manager , only : get_step_size
     use shr_const_mod    , only : SHR_CONST_CDAY, SHR_CONST_TKFRZ
     !
     ! !ARGUMENTS:
@@ -1135,7 +1124,7 @@ contains
     integer, parameter :: not_used = huge(1)
     !---------------------------------------------------------------------
 
-    dtime = get_step_size_real()
+    dtime = get_step_size()
 
     this%t_veg24_patch(bounds%begp:bounds%endp) = spval
     call init_accum_field (name='T_VEG24', units='K',                                              &
@@ -1163,6 +1152,14 @@ contains
     call init_accum_field (name='T10', units='K', &
          desc='10-day running mean of 2-m temperature', accum_type='runmean', accum_period=-10, &
          subgrid_type='pft', numlev=1,init_value=SHR_CONST_TKFRZ+20._r8)
+    !lbirch: init soil temp
+    call init_accum_field (name='SOIL10', units='K', &
+         desc='10-day running mean of soil temperature', accum_type='runmean', accum_period=-10, &
+         subgrid_type='pft', numlev=1,init_value=SHR_CONST_TKFRZ)
+   !min temp: lbirch (5 day now) 
+    call init_accum_field (name='TDM10', units='K', &
+            desc='10-day running mean of min 2-m temperature', accum_type='runmean', accum_period=-5, &
+            subgrid_type='pft', numlev=1, init_value=SHR_CONST_TKFRZ)
 
     if ( use_crop )then
        call init_accum_field (name='TDM10', units='K', &
@@ -1248,7 +1245,12 @@ contains
 
     call extract_accum_field ('T10', rbufslp, nstep)
     this%t_a10_patch(begp:endp) = rbufslp(begp:endp)
-
+    !lbirch:added
+    call extract_accum_field ('SOIL10', rbufslp, nstep)
+    this%soila10_patch(begp:endp) = rbufslp(begp:endp)
+    call extract_accum_field ('TDM10', rbufslp, nstep)
+    this%t_a10min_patch(begp:endp)= rbufslp(begp:endp)
+    
     if (use_crop) then
        call extract_accum_field ('TDM10', rbufslp, nstep)
        this%t_a10min_patch(begp:endp)= rbufslp(begp:endp)
@@ -1432,6 +1434,21 @@ contains
 
     call update_accum_field  ('T10', this%t_ref2m_patch, nstep)
     call extract_accum_field ('T10', this%t_a10_patch, nstep)
+    !temporary var lbirch
+    !rbufslp=this%t_soisno_col(:,3)
+    do p = begp,endp
+       c = patch%column(p)
+       rbufslp(p) = this%t_soisno_col(c,3)
+    end do
+    call update_accum_field  ('SOIL10', rbufslp, nstep)
+    call extract_accum_field ('SOIL10', this%soila10_patch, nstep)
+    ! Accumulate and extract TDM10
+    do p = begp,endp
+       rbufslp(p) = min(this%t_ref2m_min_patch(p),this%t_ref2m_min_inst_patch(p)) !slevis: ok choice?
+       if (rbufslp(p) > 1.e30_r8) rbufslp(p) = SHR_CONST_TKFRZ !and were 'min'&
+    end do                                                     !'min_inst' not initialized?
+    call update_accum_field  ('TDM10', rbufslp, nstep)
+    call extract_accum_field ('TDM10', this%t_a10min_patch, nstep)
 
     if ( use_crop )then
        ! Accumulate and extract TDM10

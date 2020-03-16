@@ -14,7 +14,7 @@ module CNPhenologyMod
   use shr_log_mod                     , only : errMsg => shr_log_errMsg
   use shr_sys_mod                     , only : shr_sys_flush
   use decompMod                       , only : bounds_type
-  use clm_varpar                      , only : maxveg, nlevdecomp_full
+  use clm_varpar                      , only : numpft, nlevdecomp_full
   use clm_varctl                      , only : iulog, use_cndv
   use clm_varcon                      , only : tfrz
   use abortutils                      , only : endrun
@@ -29,8 +29,7 @@ module CNPhenologyMod
   use pftconMod                       , only : pftcon
   use SoilStateType                   , only : soilstate_type
   use TemperatureType                 , only : temperature_type
-  use WaterDiagnosticBulkType                  , only : waterdiagnosticbulk_type
-  use Wateratm2lndBulkType                  , only : wateratm2lndbulk_type
+  use WaterstateType                  , only : waterstate_type
   use ColumnType                      , only : col                
   use GridcellType                    , only : grc                
   use PatchType                       , only : patch   
@@ -241,7 +240,7 @@ contains
   !-----------------------------------------------------------------------
   subroutine CNPhenology (bounds, num_soilc, filter_soilc, num_soilp, &
        filter_soilp, num_pcropp, filter_pcropp, &
-       doalb, waterdiagnosticbulk_inst, wateratm2lndbulk_inst, temperature_inst, atm2lnd_inst, crop_inst, &
+       doalb, waterstate_inst, temperature_inst, atm2lnd_inst, crop_inst, &
        canopystate_inst, soilstate_inst, dgvs_inst, &
        cnveg_state_inst, cnveg_carbonstate_inst, cnveg_carbonflux_inst,    &
        cnveg_nitrogenstate_inst, cnveg_nitrogenflux_inst, &
@@ -263,8 +262,7 @@ contains
     integer                        , intent(in)    :: num_pcropp      ! number of prog. crop patches in filter
     integer                        , intent(in)    :: filter_pcropp(:)! filter for prognostic crop patches
     logical                        , intent(in)    :: doalb           ! true if time for sfc albedo calc
-    type(waterdiagnosticbulk_type)          , intent(in)    :: waterdiagnosticbulk_inst
-    type(wateratm2lndbulk_type)          , intent(in)    :: wateratm2lndbulk_inst
+    type(waterstate_type)          , intent(in)    :: waterstate_inst
     type(temperature_type)         , intent(inout) :: temperature_inst
     type(atm2lnd_type)             , intent(in)    :: atm2lnd_inst
     type(crop_type)                , intent(inout) :: crop_inst
@@ -283,8 +281,8 @@ contains
     integer                        , intent(in)    :: phase
     !-----------------------------------------------------------------------
 
-    SHR_ASSERT_ALL_FL((ubound(leaf_prof_patch)   == (/bounds%endp,nlevdecomp_full/)), sourcefile, __LINE__)
-    SHR_ASSERT_ALL_FL((ubound(froot_prof_patch)  == (/bounds%endp,nlevdecomp_full/)), sourcefile, __LINE__)
+    SHR_ASSERT_ALL((ubound(leaf_prof_patch)   == (/bounds%endp,nlevdecomp_full/)), errMsg(sourcefile, __LINE__))
+    SHR_ASSERT_ALL((ubound(froot_prof_patch)  == (/bounds%endp,nlevdecomp_full/)), errMsg(sourcefile, __LINE__))
 
     ! each of the following phenology type routines includes a filter
     ! to operate only on the relevant patches
@@ -299,15 +297,15 @@ contains
 
        call CNSeasonDecidPhenology(num_soilp, filter_soilp, &
             temperature_inst, cnveg_state_inst, dgvs_inst, &
-            cnveg_carbonstate_inst, cnveg_nitrogenstate_inst, cnveg_carbonflux_inst, cnveg_nitrogenflux_inst)
+            cnveg_carbonstate_inst, cnveg_nitrogenstate_inst, cnveg_carbonflux_inst, cnveg_nitrogenflux_inst, waterstate_inst)
 
        call CNStressDecidPhenology(num_soilp, filter_soilp,   &
-            soilstate_inst, temperature_inst, atm2lnd_inst, wateratm2lndbulk_inst, cnveg_state_inst, &
+            soilstate_inst, temperature_inst, atm2lnd_inst, cnveg_state_inst, &
             cnveg_carbonstate_inst, cnveg_nitrogenstate_inst, cnveg_carbonflux_inst, cnveg_nitrogenflux_inst)
 
        if (doalb .and. num_pcropp > 0 ) then
           call CropPhenology(num_pcropp, filter_pcropp, &
-               waterdiagnosticbulk_inst, temperature_inst, crop_inst, canopystate_inst, cnveg_state_inst, &
+               waterstate_inst, temperature_inst, crop_inst, canopystate_inst, cnveg_state_inst, &
                cnveg_carbonstate_inst, cnveg_nitrogenstate_inst, cnveg_carbonflux_inst, cnveg_nitrogenflux_inst, &
                c13_cnveg_carbonstate_inst, c14_cnveg_carbonstate_inst)
        end if
@@ -351,7 +349,7 @@ contains
     ! initialized, and after pftcon file is read in.
     !
     ! !USES:
-    use clm_time_manager, only: get_step_size_real
+    use clm_time_manager, only: get_step_size
     use clm_varctl      , only: use_crop
     use clm_varcon      , only: secspday
     !
@@ -362,7 +360,7 @@ contains
     !
     ! Get time-step and what fraction of a day it is
     !
-    dt      = get_step_size_real()
+    dt      = real( get_step_size(), r8 )
     fracday = dt/secspday
 
     ! set constants for CNSeasonDecidPhenology 
@@ -670,7 +668,8 @@ contains
   !-----------------------------------------------------------------------
   subroutine CNSeasonDecidPhenology (num_soilp, filter_soilp       , &
        temperature_inst, cnveg_state_inst, dgvs_inst , &
-       cnveg_carbonstate_inst, cnveg_nitrogenstate_inst, cnveg_carbonflux_inst, cnveg_nitrogenflux_inst)
+       cnveg_carbonstate_inst, cnveg_nitrogenstate_inst, cnveg_carbonflux_inst, cnveg_nitrogenflux_inst, &
+       waterstate_inst)
     !
     ! !DESCRIPTION:
     ! For coupled carbon-nitrogen code (CN).
@@ -692,6 +691,7 @@ contains
     type(cnveg_nitrogenstate_type) , intent(inout) :: cnveg_nitrogenstate_inst
     type(cnveg_carbonflux_type)    , intent(inout) :: cnveg_carbonflux_inst
     type(cnveg_nitrogenflux_type)  , intent(inout) :: cnveg_nitrogenflux_inst
+    type(waterstate_type)          , intent(in)    :: waterstate_inst
     !
     ! !LOCAL VARIABLES:
     integer :: g,c,p          !indices
@@ -699,6 +699,7 @@ contains
     real(r8):: ws_flag        !winter-summer solstice flag (0 or 1)
     real(r8):: crit_onset_gdd !critical onset growing degree-day sum
     real(r8):: soilt
+    real(r8):: crit_daylbirch !lbirch: flag for temperature and onset
     !-----------------------------------------------------------------------
 
     associate(                                                                                                   & 
@@ -780,7 +781,10 @@ contains
          livestemn_storage_to_xfer           =>    cnveg_nitrogenflux_inst%livestemn_storage_to_xfer_patch     , & ! Output:  [real(r8) (:)   ]                                                    
          deadstemn_storage_to_xfer           =>    cnveg_nitrogenflux_inst%deadstemn_storage_to_xfer_patch     , & ! Output:  [real(r8) (:)   ]                                                    
          livecrootn_storage_to_xfer          =>    cnveg_nitrogenflux_inst%livecrootn_storage_to_xfer_patch    , & ! Output:  [real(r8) (:)   ]                                                    
-         deadcrootn_storage_to_xfer          =>    cnveg_nitrogenflux_inst%deadcrootn_storage_to_xfer_patch      & ! Output:  [real(r8) (:)   ]                                                    
+         deadcrootn_storage_to_xfer          =>    cnveg_nitrogenflux_inst%deadcrootn_storage_to_xfer_patch    , & ! Output:  [real(r8) (:)   ]                                                    
+         t10                                 =>    temperature_inst%soila10_patch                              , & ! Input:  [real(r8) (:) ] lbirch-added  10-day running mean of the 2 m temperature (K)
+         tmin10                              =>    temperature_inst%t_a10min_patch                              , & ! Input:  [real(r8) (:) ] lbirch-added  10-day running mean of the 2 m temperature (K)  
+         snow_depth                          =>    waterstate_inst%snow_10day                                & ! Input:  [real(r8) (:) ]  snow height (m)  
          )
 
       ! start patch loop
@@ -797,8 +801,8 @@ contains
             bgtr(p) = 0._r8
             lgsf(p) = 0._r8
 
-            ! onset gdd sum from Biome-BGC, v4.1.2
-            crit_onset_gdd = exp(4.8_r8 + 0.13_r8*(annavg_t2m(p) - SHR_CONST_TKFRZ))
+            ! onset gdd sum from Biome-BGC, v4.1.2 lbirch: setting less 0._r8, also changed eq.
+            crit_onset_gdd = exp(4.0_r8 + 0.1_r8*(annavg_t2m(p) - SHR_CONST_TKFRZ))
 
             ! set flag for solstice period (winter->summer = 1, summer->winter = 0)
             if (dayl(g) >= prev_dayl(g)) then
@@ -902,14 +906,15 @@ contains
 
                ! if the gdd flag is set, and if the soil is above freezing
                ! then accumulate growing degree days for onset trigger
-
+               
                soilt = t_soisno(c,3)
                if (onset_gddflag(p) == 1.0_r8 .and. soilt > SHR_CONST_TKFRZ) then
                   onset_gdd(p) = onset_gdd(p) + (soilt-SHR_CONST_TKFRZ)*fracday
                end if
 
                ! set onset_flag if critical growing degree-day sum is exceeded
-               if (onset_gdd(p) > crit_onset_gdd) then
+               !if (onset_gdd(p) > crit_onset_gdd) then
+               if (onset_gddflag(p) == 1.0_r8 .and. t10(p) > SHR_CONST_TKFRZ .and. tmin10(p) > SHR_CONST_TKFRZ .and. ws_flag==1.0_r8 .and. dayl(g)>(crit_dayl/2.0_r8) .and. snow_depth(c)<0.1_r8) then
                   onset_flag(p) = 1.0_r8
                   dormant_flag(p) = 0.0_r8
                   onset_gddflag(p) = 0.0_r8
@@ -954,16 +959,25 @@ contains
                   days_active(p) = days_active(p) + fracday
                   if (days_active(p) > 355._r8) pftmayexist(p) = .false.
                end if
-
+               !lbirch: extra flag for offset and temperature
+               !if (dayl(g) < crit_dayl .or. t10(p) < SHR_CONST_TKFRZ) then
+               !   temp_flag = 1._r8
+               !endif
                ! only begin to test for offset daylength once past the summer sol
-               if (ws_flag == 0._r8 .and. dayl(g) < crit_dayl) then
+               crit_daylbirch=54000-360*(65-grc%latdeg(g))
+               if (crit_daylbirch < crit_dayl) then
+                  crit_daylbirch = crit_dayl
+               end if
+
+               !print*,'lbirch',crit_daylbirch
+               if (ws_flag == 0._r8 .and. dayl(g) < crit_daylbirch) then
                   offset_flag(p) = 1._r8
                   offset_counter(p) = ndays_off * secspday
                   prev_leafc_to_litter(p) = 0._r8
                   prev_frootc_to_litter(p) = 0._r8
+                  !temp_flag = 0._r8
                end if
             end if
-
          end if ! end if seasonal deciduous
 
       end do ! end of patch loop
@@ -974,7 +988,7 @@ contains
 
   !-----------------------------------------------------------------------
   subroutine CNStressDecidPhenology (num_soilp, filter_soilp , &
-       soilstate_inst, temperature_inst, atm2lnd_inst, wateratm2lndbulk_inst, cnveg_state_inst, &
+       soilstate_inst, temperature_inst, atm2lnd_inst, cnveg_state_inst, &
        cnveg_carbonstate_inst, cnveg_nitrogenstate_inst, &
        cnveg_carbonflux_inst, cnveg_nitrogenflux_inst)
     !
@@ -1002,7 +1016,6 @@ contains
     type(soilstate_type)           , intent(in)    :: soilstate_inst
     type(temperature_type)         , intent(in)    :: temperature_inst
     type(atm2lnd_type)             , intent(in)    :: atm2lnd_inst
-    type(wateratm2lndbulk_type)             , intent(in)    :: wateratm2lndbulk_inst
     type(cnveg_state_type)         , intent(inout) :: cnveg_state_inst
     type(cnveg_carbonstate_type)   , intent(inout) :: cnveg_carbonstate_inst
     type(cnveg_nitrogenstate_type) , intent(inout) :: cnveg_nitrogenstate_inst
@@ -1025,7 +1038,7 @@ contains
          ivt                                 =>    patch%itype                                                   , & ! Input:  [integer   (:)   ]  patch vegetation type                                
          dayl                                =>    grc%dayl                                                    , & ! Input:  [real(r8)  (:)   ]  daylength (s)
          
-         prec10                              => wateratm2lndbulk_inst%prec10_patch                                     , & ! Input:  [real(r8) (:)     ]  10-day running mean of tot. precipitation
+         prec10                              => atm2lnd_inst%prec10_patch                                     , & ! Input:  [real(r8) (:)     ]  10-day running mean of tot. precipitation
          leaf_long                           =>    pftcon%leaf_long                                            , & ! Input:  leaf longevity (yrs)                              
          woody                               =>    pftcon%woody                                                , & ! Input:  binary flag for woody lifeform (1=woody, 0=not woody)
          stress_decid                        =>    pftcon%stress_decid                                         , & ! Input:  binary flag for stress-deciduous leaf habit (0 or 1)
@@ -1421,7 +1434,7 @@ contains
 
   !-----------------------------------------------------------------------
   subroutine CropPhenology(num_pcropp, filter_pcropp                     , &
-       waterdiagnosticbulk_inst, temperature_inst, crop_inst, canopystate_inst, cnveg_state_inst , &
+       waterstate_inst, temperature_inst, crop_inst, canopystate_inst, cnveg_state_inst , &
        cnveg_carbonstate_inst, cnveg_nitrogenstate_inst, cnveg_carbonflux_inst, cnveg_nitrogenflux_inst,&
        c13_cnveg_carbonstate_inst, c14_cnveg_carbonstate_inst)
 
@@ -1444,7 +1457,7 @@ contains
     ! !ARGUMENTS:
     integer                        , intent(in)    :: num_pcropp       ! number of prog crop patches in filter
     integer                        , intent(in)    :: filter_pcropp(:) ! filter for prognostic crop patches
-    type(waterdiagnosticbulk_type)          , intent(in)    :: waterdiagnosticbulk_inst
+    type(waterstate_type)          , intent(in)    :: waterstate_inst
     type(temperature_type)         , intent(in)    :: temperature_inst
     type(crop_type)                , intent(inout) :: crop_inst
     type(canopystate_type)         , intent(in)    :: canopystate_inst
@@ -1912,7 +1925,7 @@ contains
             if (t_ref2m_min(p) < 1.e30_r8 .and. vf(p) /= 1._r8 .and. &
                (ivt(p) == nwwheat .or. ivt(p) == nirrig_wwheat)) then
                call vernalization(p, &
-                    canopystate_inst, temperature_inst, waterdiagnosticbulk_inst, cnveg_state_inst, &
+                    canopystate_inst, temperature_inst, waterstate_inst, cnveg_state_inst, &
                     crop_inst)
             end if
 
@@ -2053,8 +2066,8 @@ contains
 
     allocate( inhemi(bounds%begp:bounds%endp) )
 
-    allocate( minplantjday(0:maxveg,inSH)) ! minimum planting julian day
-    allocate( maxplantjday(0:maxveg,inSH)) ! minimum planting julian day
+    allocate( minplantjday(0:numpft,inSH)) ! minimum planting julian day
+    allocate( maxplantjday(0:numpft,inSH)) ! minimum planting julian day
 
     ! Julian day for the start of the year (mid-winter)
     jdayyrstart(inNH) =   1
@@ -2101,7 +2114,7 @@ contains
 
   !-----------------------------------------------------------------------
   subroutine vernalization(p, &
-       canopystate_inst, temperature_inst, waterdiagnosticbulk_inst, cnveg_state_inst, crop_inst)
+       canopystate_inst, temperature_inst, waterstate_inst, cnveg_state_inst, crop_inst)
     !
     ! !DESCRIPTION:
     !
@@ -2117,7 +2130,7 @@ contains
     integer                , intent(in)    :: p    ! PATCH index running over
     type(canopystate_type) , intent(in)    :: canopystate_inst
     type(temperature_type) , intent(in)    :: temperature_inst
-    type(waterdiagnosticbulk_type)  , intent(in)    :: waterdiagnosticbulk_inst
+    type(waterstate_type)  , intent(in)    :: waterstate_inst
     type(cnveg_state_type) , intent(inout) :: cnveg_state_inst
     type(crop_type)        , intent(inout) :: crop_inst
     !
@@ -2135,7 +2148,7 @@ contains
          t_ref2m_min => temperature_inst%t_ref2m_min_patch , & ! Input:  [real(r8) (:) ] daily minimum of average 2 m height surface air temperature (K)
          t_ref2m_max => temperature_inst%t_ref2m_max_patch , & ! Input:  [real(r8) (:) ] daily maximum of average 2 m height surface air temperature (K)
 
-         snow_depth  => waterdiagnosticbulk_inst%snow_depth_col     , & ! Input:  [real(r8) (:) ]  snow height (m)                                   
+         snow_depth  => waterstate_inst%snow_depth_col     , & ! Input:  [real(r8) (:) ]  snow height (m)                                   
 
          hdidx       => cnveg_state_inst%hdidx_patch       , & ! Output: [real(r8) (:) ]  cold hardening index?                             
          cumvd       => cnveg_state_inst%cumvd_patch       , & ! Output: [real(r8) (:) ]  cumulative vernalization d?ependence?             
@@ -2885,8 +2898,8 @@ contains
     integer :: fc,c,pi,p,j       ! indices
     !-----------------------------------------------------------------------
 
-    SHR_ASSERT_ALL_FL((ubound(leaf_prof_patch)   == (/bounds%endp,nlevdecomp_full/)), sourcefile, __LINE__)
-    SHR_ASSERT_ALL_FL((ubound(froot_prof_patch)  == (/bounds%endp,nlevdecomp_full/)), sourcefile, __LINE__)
+    SHR_ASSERT_ALL((ubound(leaf_prof_patch)   == (/bounds%endp,nlevdecomp_full/)), errMsg(sourcefile, __LINE__))
+    SHR_ASSERT_ALL((ubound(froot_prof_patch)  == (/bounds%endp,nlevdecomp_full/)), errMsg(sourcefile, __LINE__))
 
     associate(                                                                                & 
          leaf_prof                 => leaf_prof_patch                                       , & ! Input:  [real(r8) (:,:) ]  (1/m) profile of leaves                         
